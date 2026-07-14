@@ -44,6 +44,7 @@ class Args:
     model_ckpt_id: int = 80000
 
     # task control
+    num_episodes: int = 10
     re_eval_tasks: str = "" # tasks split by comma
     only_tasks: str = "" # tasks split by comma
     exclude_tasks: str = "" # tasks split by comma
@@ -296,7 +297,7 @@ def evaluate(args: Args):
     if args.exclude_tasks:
         task_names = [task_name for task_name in task_names if task_name not in args.exclude_tasks.split(",")]
         for task in args.exclude_tasks.split(","):
-            log_dict[task] = {str(i): False for i in range(50)}
+            log_dict[task] = {str(i): False for i in range(args.num_episodes)}
 
     subgoal_predictor = build_subgoal_predictor(args, save_dir)
     evaluator = EpisodeEvaluator(args, save_dir)
@@ -307,7 +308,7 @@ def evaluate(args: Args):
                 log_dict[task_name] = {}
 
             env_runner = EnvRunner(task_name, video_save_dir, max_steps=args.max_steps)
-            num_episodes = env_runner.num_episodes
+            num_episodes = min(args.num_episodes, env_runner.num_episodes)
 
             success_flag = "unknown"
 

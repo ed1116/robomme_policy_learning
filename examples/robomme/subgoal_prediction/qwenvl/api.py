@@ -37,7 +37,7 @@ class Qwen3VLModel:
         self.engine = PtEngine(
             model_id_or_path='Qwen/Qwen3-VL-4B-Instruct',
             adapters=[adapter_path],
-            attn_impl='flash_attention_2' #'sdpa'
+            attn_impl='sdpa'
         )
         
     def _parse_box_patterns(self, subgoal: str, replacement: str = "scaled_coords", return_bbox: bool = False):
