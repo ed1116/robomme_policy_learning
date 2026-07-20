@@ -36,6 +36,7 @@ class WebsocketPolicyServer:
         asyncio.run(self.run())
 
     async def run(self):
+        self._shutdown_event = asyncio.Event()
         async with _server.serve(
             self._handler,
             self._host,
@@ -44,19 +45,26 @@ class WebsocketPolicyServer:
             max_size=None,
             process_request=_health_check,
         ) as server:
-            await server.serve_forever()
+            await self._shutdown_event.wait()
+        logger.info("Policy server shut down cleanly")
 
     async def _handler(self, websocket: _server.ServerConnection):
         logger.info(f"Connection from {websocket.remote_address} opened")
         packer = msgpack_numpy.Packer()
+        client_started = False
 
-        await websocket.send(packer.pack(self._metadata))
-        
-        while True:
-            try:
+        try:
+            await websocket.send(packer.pack(self._metadata))
+
+            while True:
                 obs = msgpack_numpy.unpackb(await websocket.recv())
-                
-                if obs.get("reset", False):
+                client_started = True
+
+                if obs.get("shutdown", False):
+                    await websocket.send(packer.pack({"shutdown_finished": True}))
+                    self._shutdown_event.set()
+                    break
+                elif obs.get("reset", False):
                     tstart = time.monotonic()
                     self._policy.reset()
                     tend = time.monotonic() - tstart
@@ -72,16 +80,23 @@ class WebsocketPolicyServer:
                     outputs = self._policy.infer(obs)
                     await websocket.send(packer.pack(outputs))
 
-            except websockets.ConnectionClosed:
-                logger.info(f"Connection from {websocket.remote_address} closed")
-                break
-            except Exception:
+        except websockets.ConnectionClosed:
+            pass
+        except Exception:
+            try:
                 await websocket.send(traceback.format_exc())
                 await websocket.close(
                     code=websockets.frames.CloseCode.INTERNAL_ERROR,
                     reason="Internal server error. Traceback included in previous frame.",
                 )
-                raise
+            except websockets.ConnectionClosed:
+                pass
+            raise
+        finally:
+            await websocket.close()
+            logger.info(f"Connection from {websocket.remote_address} closed")
+            if client_started:
+                self._shutdown_event.set()
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:

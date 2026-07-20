@@ -69,6 +69,22 @@ class EpisodeEvaluator:
     def __init__(self, args: Args, save_dir: Path):
         self.args = args
         self.save_dir = save_dir
+        self.client = _websocket_client_policy.MMEVLAWebsocketClientPolicy(
+            self.args.host, self.args.port
+        )
+
+    def close(self) -> None:
+        if self.client is None:
+            return
+        try:
+            response = self.client.shutdown_server()
+            if not response.get("shutdown_finished", False):
+                print("Policy server did not acknowledge shutdown")
+        except Exception as error:
+            print(f"Could not request policy server shutdown: {error}")
+        finally:
+            self.client.close()
+            self.client = None
 
     def eval_each_episode(
         self,
@@ -76,9 +92,7 @@ class EpisodeEvaluator:
         subgoal_predictor: SubgoalPredictorBase,
         video_save_dir: Path,
     ) -> str:
-        client = _websocket_client_policy.MMEVLAWebsocketClientPolicy(
-            self.args.host, self.args.port
-        )
+        client = self.client
         resp = client.reset()
         while not resp.get("reset_finished", False):
             time.sleep(0.1)
@@ -301,6 +315,30 @@ def evaluate(args: Args):
 
     subgoal_predictor = build_subgoal_predictor(args, save_dir)
     evaluator = EpisodeEvaluator(args, save_dir)
+
+    try:
+        _evaluate_tasks(
+            args,
+            save_dir,
+            video_save_dir,
+            log_dict,
+            task_names,
+            subgoal_predictor,
+            evaluator,
+        )
+    finally:
+        evaluator.close()
+
+
+def _evaluate_tasks(
+    args: Args,
+    save_dir: Path,
+    video_save_dir: Path,
+    log_dict: dict,
+    task_names: list[str],
+    subgoal_predictor: SubgoalPredictorBase,
+    evaluator: EpisodeEvaluator,
+) -> None:
 
     while not os.path.exists(save_dir / "log.json"):
         for task_name in task_names:

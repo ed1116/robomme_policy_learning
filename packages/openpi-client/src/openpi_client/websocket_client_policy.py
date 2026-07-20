@@ -22,6 +22,7 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             self._uri += f":{port}"
         self._packer = msgpack_numpy.Packer()
         self._api_key = api_key
+        self._closed = False
         self._ws, self._server_metadata = self._wait_for_server()
 
     def get_server_metadata(self) -> Dict:
@@ -56,6 +57,18 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     def reset(self) -> None:
         pass
 
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._ws.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
 class MMEVLAWebsocketClientPolicy(WebsocketClientPolicy):
     """ add reset method to the base policy"""
     
@@ -76,6 +89,13 @@ class MMEVLAWebsocketClientPolicy(WebsocketClientPolicy):
     
     def add_buffer(self, buffer: Dict):
         data = self._packer.pack(buffer)
+        self._ws.send(data)
+        response = self._ws.recv()
+        return msgpack_numpy.unpackb(response)
+
+    def shutdown_server(self) -> Dict:
+        """Ask the dedicated policy server to stop after acknowledging this client."""
+        data = self._packer.pack({"shutdown": True})
         self._ws.send(data)
         response = self._ws.recv()
         return msgpack_numpy.unpackb(response)
