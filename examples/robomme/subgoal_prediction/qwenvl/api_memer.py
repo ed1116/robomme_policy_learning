@@ -12,6 +12,7 @@ os.environ['VIDEO_MAX_TOKEN_NUM'] = '64'
 os.environ['FPS_MAX_FRAMES'] = '10'
 
 import json
+import torch
 from swift.llm import PtEngine, InferRequest, RequestConfig
 
 class Qwen3VLModelMemER:
@@ -27,7 +28,8 @@ class Qwen3VLModelMemER:
         self.engine = PtEngine(
             model_id_or_path='runs/ckpts/vlm_subgoal_predictor/qwenvl/Qwen3-VL-4B-Instruct',
             adapters=[adapter_path],
-            attn_impl='flash_attention_2' #'sdpa'
+            attn_impl='flash_attention_2', # 'sdpa'
+            torch_dtype=torch.float16,
         )
         
         

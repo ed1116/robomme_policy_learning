@@ -111,9 +111,9 @@ class MemoryBuffer:
             
             token_emb_to_save = {
                 "image_pixels": images[i].copy(), # fp32, this is for visualization
-                "image_emb_8x8": image_emb_8x8, # bf16
-                "image_emb_4x4": image_emb_4x4, # bf16
-                "image_emb_2x2": image_emb_2x2, # bf16
+                "image_emb_8x8": image_emb_8x8, # configured model precision
+                "image_emb_4x4": image_emb_4x4, # configured model precision
+                "image_emb_2x2": image_emb_2x2, # configured model precision
                 "pos_emb_8x8": pos_emb_8x8, # fp32
                 "pos_emb_4x4": pos_emb_4x4, # fp32
                 "pos_emb_2x2": pos_emb_2x2, # fp32

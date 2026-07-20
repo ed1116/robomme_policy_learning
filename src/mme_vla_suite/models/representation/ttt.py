@@ -28,6 +28,7 @@ class TTTBase(nnx.Module):
         self,
         config,
         rngs: nnx.Rngs,
+        dtype: at.DTypeLike = jnp.float32,
     ):
         self.config = config
         self.hidden_dim = config.recurrent_memory.hidden_dim
@@ -38,7 +39,7 @@ class TTTBase(nnx.Module):
 
         self.output_stats = config.recurrent_memory.output_stats
 
-        self.dtype = dtype = jnp.float32 # fix this dtype
+        self.dtype = dtype
 
         self._setup_lr(rngs, dtype)
         self._setup_qkvo(rngs, dtype)

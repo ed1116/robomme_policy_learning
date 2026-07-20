@@ -150,11 +150,12 @@ def init_train_state(
             model = nnx.merge(graphdef, state)
 
         params = nnx.state(model)
-        # Convert frozen params to bfloat16.
+        # Keep frozen and trainable parameters at the configured training precision.
+        param_dtype = jnp.dtype(config.model.dtype)
         params = nnx_utils.state_map(
             params,
             config.freeze_filter,
-            lambda p: p.replace(p.value.astype(jnp.bfloat16)),
+            lambda p: p.replace(p.value.astype(param_dtype)),
         )
 
         logging.info(

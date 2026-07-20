@@ -21,6 +21,7 @@ class RMTLayer(nnx.Module):
         self,
         config,
         rngs: nnx.Rngs,
+        dtype: at.DTypeLike = jnp.float32,
     ):
         self.config = config
         self.mem_slots = config.budget
@@ -30,7 +31,7 @@ class RMTLayer(nnx.Module):
         self.mini_batch_size = self.config.recurrent_memory.mini_batch_size
         self.head_dim = self.hidden_dim // self.num_heads
         
-        self.dtype = dtype = jnp.float32
+        self.dtype = dtype
 
         self.output_stats = config.recurrent_memory.output_stats
 
@@ -152,9 +153,9 @@ class RMTLayer(nnx.Module):
             q_vec, k_vec = apply_rotary_emb(q_vec[None, :], k_vec[None, :], freqs_cis)
 
             encoded = jax.nn.dot_product_attention(
-                query=q_vec[0].astype(jnp.bfloat16),
-                key=k_vec[0].astype(jnp.bfloat16),
-                value=v_vec.astype(jnp.bfloat16),
+                query=q_vec[0].astype(self.dtype),
+                key=k_vec[0].astype(self.dtype),
+                value=v_vec.astype(self.dtype),
             )
 
             encoded = einops.rearrange(encoded, "s nh d -> s (nh d)")
@@ -165,10 +166,10 @@ class RMTLayer(nnx.Module):
 
             if self.output_stats:
                 stats_dict = {
-                    "x_v_norm": jnp.linalg.norm(v_vec[:input_len], axis=-1).mean().astype(jnp.bfloat16),
-                    "mem_v_norm": jnp.linalg.norm(v_vec[-mem_slots:], axis=-1).mean().astype(jnp.bfloat16),
-                    "mem_in_norm": jnp.linalg.norm(mem_state, axis=-1).mean().astype(jnp.bfloat16),
-                    "mem_out_norm": jnp.linalg.norm(out, axis=-1).mean().astype(jnp.bfloat16),
+                    "x_v_norm": jnp.linalg.norm(v_vec[:input_len], axis=-1).mean().astype(self.dtype),
+                    "mem_v_norm": jnp.linalg.norm(v_vec[-mem_slots:], axis=-1).mean().astype(self.dtype),
+                    "mem_in_norm": jnp.linalg.norm(mem_state, axis=-1).mean().astype(self.dtype),
+                    "mem_out_norm": jnp.linalg.norm(out, axis=-1).mean().astype(self.dtype),
                     "mask": mask_mb.astype(jnp.bool_),
                 }
             else:
@@ -180,10 +181,10 @@ class RMTLayer(nnx.Module):
         def keep_original():
             if self.output_stats:
                 stats_dict = {
-                    "x_v_norm": jnp.array(0.0).astype(jnp.bfloat16),
-                    "mem_v_norm": jnp.array(0.0).astype(jnp.bfloat16),
-                    "mem_in_norm": jnp.linalg.norm(mem_state, axis=-1).mean().astype(jnp.bfloat16),
-                    "mem_out_norm": jnp.array(0.0).astype(jnp.bfloat16),
+                    "x_v_norm": jnp.array(0.0).astype(self.dtype),
+                    "mem_v_norm": jnp.array(0.0).astype(self.dtype),
+                    "mem_in_norm": jnp.linalg.norm(mem_state, axis=-1).mean().astype(self.dtype),
+                    "mem_out_norm": jnp.array(0.0).astype(self.dtype),
                     "mask": mask_mb.astype(jnp.bool_),
                 }
             else:

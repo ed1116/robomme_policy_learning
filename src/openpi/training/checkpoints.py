@@ -243,8 +243,8 @@ def restore_state_trainable_only(
                     flat_params = {kp[:-1]: v for kp, v in flat_params.items()}
                 restored_params = traverse_util.unflatten_dict(flat_params)
 
-                partial_params = jax.tree.map(lambda x: x.astype(jax.numpy.bfloat16), partial_params)        
-                params.replace_by_pure_dict(partial_params) # restore the frozen params (bfloat16)
+                partial_params = jax.tree.map(lambda x: x.astype(jax.numpy.float32), partial_params)
+                params.replace_by_pure_dict(partial_params) # restore frozen params for FP32 training
                 params.replace_by_pure_dict(restored_params["params"]) # restore the trainable params
                 if "variables" in restored_params:
                     params.replace_by_pure_dict(restored_params["variables"]) # restore the variables params
@@ -260,8 +260,8 @@ def restore_state_trainable_only(
                     "params": {"params": trainable_params, "variables": variables_params},
                 },
             )
-            partial_params = jax.tree.map(lambda x: x.astype(jax.numpy.bfloat16), partial_params)        
-            params.replace_by_pure_dict(partial_params) # restore the frozen params (bfloat16)
+            partial_params = jax.tree.map(lambda x: x.astype(jax.numpy.float32), partial_params)
+            params.replace_by_pure_dict(partial_params) # restore frozen params for FP32 training
             params.replace_by_pure_dict(restored["params"]["params"].to_pure_dict()) # restore the trainable params
             params.replace_by_pure_dict(restored["params"]["variables"].to_pure_dict()) # restore the variables params
             

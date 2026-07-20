@@ -22,7 +22,7 @@ swift sft \
     --load_from_cache_file true \
     --packing false \
     --train_type lora \
-    --torch_dtype bfloat16 \
+    --torch_dtype float32 \
     --num_train_epochs 2 \
     --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 4 \

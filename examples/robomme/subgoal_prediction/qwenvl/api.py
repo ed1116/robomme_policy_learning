@@ -11,6 +11,7 @@ os.environ['VIDEO_MAX_TOKEN_NUM'] = '64'
 os.environ['FPS_MAX_FRAMES'] = '10'
 
 import json
+import torch
 from swift.llm import PtEngine, InferRequest, RequestConfig
 
 class Qwen3VLModel:
@@ -37,7 +38,8 @@ class Qwen3VLModel:
         self.engine = PtEngine(
             model_id_or_path='runs/ckpts/vlm_subgoal_predictor/qwenvl/Qwen3-VL-4B-Instruct',
             adapters=[adapter_path],
-            attn_impl='sdpa'
+            attn_impl='sdpa',
+            torch_dtype=torch.float16,
         )
         
     def _parse_box_patterns(self, subgoal: str, replacement: str = "scaled_coords", return_bbox: bool = False):

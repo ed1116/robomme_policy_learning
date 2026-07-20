@@ -44,9 +44,9 @@ class RecurrentMemory(nnx.Module):
 
         self.pre_norm = nnx.LayerNorm(self.hidden_dim, rngs=rngs, dtype=dtype)
         if self.recur_type == "ttt":
-            self.recur_layer = TTTLayerLinear(config=self.cfg, rngs=rngs)
+            self.recur_layer = TTTLayerLinear(config=self.cfg, rngs=rngs, dtype=dtype)
         else:
-            self.recur_layer = RMTLayer(config=self.cfg, rngs=rngs)
+            self.recur_layer = RMTLayer(config=self.cfg, rngs=rngs, dtype=dtype)
 
         self.proj = nnx.Linear(
             self.hidden_dim,

@@ -11,14 +11,19 @@ import os
 
 
 class SigLipTokenizer:
-    def __init__(self, rngs: nnx.Rngs = nnx.Rngs(2), inference_batch_size: int = 64):
+    def __init__(
+        self,
+        rngs: nnx.Rngs = nnx.Rngs(2),
+        inference_batch_size: int = 64,
+        dtype: at.DTypeLike = jnp.float32,
+    ):
         img = nnx_bridge.ToNNX(
             _siglip.Module(
                 num_classes=2048,  # fixed for pi05
                 variant="So400m/14",
                 pool_type="none",
                 scan=True,
-                dtype_mm="bfloat16",
+                dtype_mm=dtype,
             )
         )
         img.lazy_init(jax.numpy.ones((1, 224, 224, 3)), train=False, rngs=rngs)

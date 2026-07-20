@@ -43,8 +43,14 @@ def create_trained_policy(
         )
     
 
-    logging.info("Loading model...")
-    model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+    # RTX 8000-class GPUs execute float16 natively but don't have native bfloat16
+    # tensor-core support, so inference explicitly uses float16.
+    train_config = dataclasses.replace(
+        train_config,
+        model=dataclasses.replace(train_config.model, dtype="float16"),
+    )
+    logging.info("Loading model for float16 inference...")
+    model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.float16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     
     if norm_stats is None:
