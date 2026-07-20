@@ -25,7 +25,7 @@ class Qwen3VLModelMemER:
         
         print(f"Loading Qwen3-VL-4B-Instruct model Adapter from {adapter_path}")
         self.engine = PtEngine(
-            model_id_or_path='Qwen/Qwen3-VL-4B-Instruct',
+            model_id_or_path='runs/ckpts/vlm_subgoal_predictor/qwenvl/Qwen3-VL-4B-Instruct',
             adapters=[adapter_path],
             attn_impl='flash_attention_2' #'sdpa'
         )
