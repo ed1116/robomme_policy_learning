@@ -6,11 +6,24 @@ import traceback
 
 from openpi_client import msgpack_numpy
 import websockets.asyncio.server as _server
+import websockets.exceptions
 import websockets.frames
 
 from mme_vla_suite.policies.policy import MME_VLA_Policy
 
 logger = logging.getLogger(__name__)
+
+
+class _ExpectedHandshakeErrorFilter(logging.Filter):
+    """Hide malformed HTTP probes while preserving genuine server failures."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() != "opening handshake failed" or record.exc_info is None:
+            return True
+        return not isinstance(
+            record.exc_info[1],
+            (websockets.exceptions.InvalidHandshake, websockets.exceptions.InvalidMessage),
+        )
 
 
 class WebsocketPolicyServer:
@@ -30,7 +43,9 @@ class WebsocketPolicyServer:
         self._host = host
         self._port = port
         self._metadata = metadata or {}
-        logging.getLogger("websockets.server").setLevel(logging.INFO)
+        websocket_logger = logging.getLogger("websockets.server")
+        websocket_logger.setLevel(logging.INFO)
+        websocket_logger.addFilter(_ExpectedHandshakeErrorFilter())
 
     def serve_forever(self) -> None:
         asyncio.run(self.run())
@@ -102,5 +117,13 @@ class WebsocketPolicyServer:
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:
     if request.path == "/healthz":
         return connection.respond(http.HTTPStatus.OK, "OK\n")
+
+    upgrade = request.headers.get("Upgrade", "").lower()
+    connection_tokens = {
+        token.strip().lower() for token in request.headers.get("Connection", "").split(",")
+    }
+    if upgrade != "websocket" or "upgrade" not in connection_tokens:
+        return connection.respond(http.HTTPStatus.UPGRADE_REQUIRED, "WebSocket upgrade required\n")
+
     # Continue with the normal request handling.
     return None
