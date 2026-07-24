@@ -1,0 +1,5 @@
+TASK: PickXtimes
+RUNTIME PHASE (CODE-DERIVED): No demonstration frames. Wait 0 frames; reset frame 0 is the first execution observation.
+SUCCESS CRITERIA:
+- Correct completion: Complete exactly the specified number of pick-and-place repetitions and then press the button.
+- Immediate failure: Picking a wrong cube, pressing the button before completing all required repetitions, or performing more repetitions than specified terminates the episode early.

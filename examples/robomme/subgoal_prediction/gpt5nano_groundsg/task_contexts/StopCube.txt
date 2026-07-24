@@ -1,0 +1,6 @@
+TASK: StopCube
+RUNTIME PHASE (CODE-DERIVED): No demonstration frames. Wait 0 frames; reset frame 0 is the first execution observation.
+SUCCESS CRITERIA:
+- Precise synchronization: Press the button strictly while the cube overlaps the target.
+- Correct ordinality: The stop must correspond to the specified occurrence of the cube reaching the target.
+- Failure: Pressing the button too early or too late terminates the episode.

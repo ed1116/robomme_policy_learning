@@ -1,0 +1,5 @@
+TASK: SwingXtimes
+RUNTIME PHASE (CODE-DERIVED): No demonstration frames. Wait 0 frames; reset frame 0 is the first execution observation.
+SUCCESS CRITERIA:
+- Correct completion: Press the button only after completing the exact required number of swing motions between the two targets and placing the cube on the table.
+- Immediate failure: Picking the wrong cube, pressing the button before all repetitions are complete, or reaching either target more than the specified number of times terminates the episode early.

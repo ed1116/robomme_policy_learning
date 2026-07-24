@@ -1,0 +1,5 @@
+TASK: VideoUnmask
+RUNTIME PHASE (CODE-DERIVED): The reset output begins with a demonstration. Let N = demo_frame_count = len(front_rgb_list)-1. Observe frames 0 through N-1 without acting; frame N is the first execution observation. Continue execution from frame N only when phase=execution. N is generated per episode and is not a fixed task constant.
+SUCCESS CRITERIA:
+- Correct completion: Pick all containers hiding the specified cubes at least once, following the required order when applicable.
+- Immediate failure: Picking any incorrect container hiding a non-specified cube terminates the episode.

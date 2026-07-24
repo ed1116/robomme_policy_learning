@@ -1,0 +1,6 @@
+TASK: BinFill
+RUNTIME PHASE (CODE-DERIVED): No demonstration frames. Wait 0 frames; reset frame 0 is the first execution observation.
+SUCCESS CRITERIA:
+- Correct completion: Press the button only after placing the exact required number of cubes for each specified color in the bin.
+- Failure: Placing fewer or more cubes than required for any color at evaluation time fails.
+- Immediate failure: Exceeding the required count for any color terminates the episode early.

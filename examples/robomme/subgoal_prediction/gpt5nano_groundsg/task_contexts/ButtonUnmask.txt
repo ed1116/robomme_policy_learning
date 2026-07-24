@@ -1,0 +1,5 @@
+TASK: ButtonUnmask
+RUNTIME PHASE (CODE-DERIVED): No demonstration frames. Wait 0 frames; reset frame 0 is the first execution observation.
+SUCCESS CRITERIA:
+- Correct completion: Press the button and pick all specified containers at least once, following the required order.
+- Immediate failure: Picking a container before completing the button-press phase or picking an incorrect container hiding a non-specified cube terminates the episode early.
