@@ -1,0 +1,24 @@
+PERCEPTION CALL
+
+Return only direct observations from the four supplied front-view frames.
+
+- Include every visible button, container, and colored cube in observed_objects,
+  even when unchanged since the previous call.
+- observation_id is a short response-local identifier such as o1.
+- Reuse an existing canonical entity_id when identity is supported by appearance
+  and trajectory. Use null for a genuinely new or unresolved object; deterministic
+  code assigns its canonical ID.
+- Give every visible object a tight bbox from the newest frame where it is visible.
+- evidence_frame must be one of the four supplied absolute frame numbers.
+- Set color only when visually supported. Gray is a valid container/button color.
+- Mark pressed or held only when visually supported.
+- observed_relations contains currently supported container-covers-cube relations.
+- observed_events contains only transitions occurring inside this four-frame
+  window. For references, use either an existing entity_id or an observation_id
+  from this response.
+- Use covered when a container newly covers a cube and uncovered when it reveals
+  the cube. Use moved for meaningful motion, pressed for a button press, picked
+  for stable attachment/lift, and placed for support/release.
+- Do not judge subgoal completion and do not propose a subgoal.
+
+Output keys: observed_objects, observed_relations, observed_events, uncertainties.
