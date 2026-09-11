@@ -12,6 +12,7 @@ from subgoal_prediction.gemini.prompts import (
     IMAGE_TEXT_QUERY,
     VIDEO_TEXT_QUERY,
 )
+from subgoal_prediction.gemma_groundsg import GemmaGroundSGModel
 
 from subgoal_prediction.qwenvl.api import Qwen3VLModel
 from subgoal_prediction.qwenvl.api_memer import Qwen3VLModelMemER
@@ -152,6 +153,44 @@ class GeminiSubgoalPredictor(SubgoalPredictorBase):
         return count % 48 == 0
 
 
+class GemmaGroundSGSubgoalPredictor(GeminiSubgoalPredictor):
+    """Gemma replacement for Gemini with the original GroundSG information flow."""
+
+    def start_episode(self, epstate: EpisodeState, env_runner: EnvRunner) -> None:
+        previous_api = getattr(self, "api", None)
+        if previous_api is not None:
+            previous_api.clear_uploaded_files()
+        SubgoalPredictorBase.start_episode(self, epstate, env_runner)
+        self.api = GemmaGroundSGModel(
+            save_dir=os.path.join(self.save_dir, self.env_name, f"ep{self.episode_id}"),
+            task_id=self.env_name,
+            model_name=self.args.gemma_groundsg_model_id,
+            task_goal=self.task_goal,
+            subgoal_type=self.args.subgoal_type,
+            max_new_tokens=self.args.gemma_groundsg_max_new_tokens,
+        )
+        self.video_buffer.extend(epstate.image_buffer[:-1])
+        print(
+            f"[robomme] Gemma GroundSG agent for {self.args.subgoal_type}, "
+            f"task {self.env_name}, episode {self.episode_id}, setup finished"
+        )
+
+    def get_subgoal(
+        self,
+        count: int,
+        current_subgoal: Optional[str],
+        last_subgoal: Optional[str],
+    ) -> Tuple[Optional[str], bool]:
+        subgoal, has_api_error = super().get_subgoal(
+            count,
+            current_subgoal,
+            last_subgoal,
+        )
+        if has_api_error:
+            self.api.clear_uploaded_files()
+        return subgoal, has_api_error
+
+
 class QwenVLSubgoalPredictor(SubgoalPredictorBase):
     
     def setup_api(self) -> None:
@@ -246,6 +285,8 @@ def build_subgoal_predictor(
     args,
     save_dir: Path,
 ) -> SubgoalPredictorBase:
+    if args.use_gemma_groundsg:
+        return GemmaGroundSGSubgoalPredictor(args, save_dir)
     if args.use_gemini:
         return GeminiSubgoalPredictor(args, save_dir)
     if args.use_qwenvl:
@@ -256,6 +297,4 @@ def build_subgoal_predictor(
         return OracleSubgoalPredictor(args, save_dir)
     
     return NullSubgoalPredictor(args, save_dir)
-
-
 

@@ -1,0 +1,61 @@
+PERCEPTION INITIALIZATION CALL — OBSERVATIONS ONLY
+
+Create the initial visible-object inventory from the newest chronological
+front-camera image.
+
+There are no objects other than these: ['cube', 'button', 'container']
+
+Your job is only to report directly visible object state. Do not infer or output
+relations, events, task completion, subgoals, hidden identities, or future
+motion. The deterministic reducer owns all persistent IDs, relations, and
+events.
+
+List every distinct task object visible in the newest supplied frame exactly
+once. Ignore the robot, table, shadows, background, and rendering artifacts.
+
+Each object requires:
+
+- observation_id: a unique response-local ID, sequentially named
+  observation_1, observation_2, observation_3, and so on.
+- entity_id: null because no persistent tracks exist yet.
+- type: cube, button, or container.
+- bbox_xyxy_norm1000: a tight [x_min, y_min, x_max, y_max] box normalized to
+  0-1000. Use this ordering and scale only.
+- color, pressed, highlighted, and held: set only from direct visual evidence.
+- evidence_frame: the newest frame supporting the reported box and state.
+
+Never reuse an observation_id within the response. N observed_objects require
+N distinct observation IDs.
+
+The initial call cannot contain visibility changes because no persistent
+entities exist yet.
+
+Return one JSON object with no prose or code fence. The object must contain
+exactly these top-level keys: observed_objects,
+observed_visibility_changes, and uncertainties. Populate observed_objects with
+the actual initial inventory, set observed_visibility_changes to an empty
+array, and include only genuine ambiguities in uncertainties.
+
+JSON FORMAT EXAMPLE
+
+The values below are synthetic and demonstrate format only. Do not copy the
+object count, type, coordinates, attributes, or frame number; use the supplied
+images instead.
+
+{
+  "observed_objects": [
+    {
+      "observation_id": "observation_1",
+      "entity_id": null,
+      "type": "cube",
+      "bbox_xyxy_norm1000": [120, 180, 220, 280],
+      "color": "green",
+      "pressed": null,
+      "highlighted": false,
+      "held": false,
+      "evidence_frame": 0
+    }
+  ],
+  "observed_visibility_changes": [],
+  "uncertainties": []
+}

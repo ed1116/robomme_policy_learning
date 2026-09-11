@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import copy
 import math
 import string
 
 from .schemas import EntityState
-from .schemas import EventObservation
+from .schemas import MemoryEntity
 from .schemas import MemoryEvent
 from .schemas import MemoryRelation
 from .schemas import MemoryState
 from .schemas import ObjectObservation
 from .schemas import PerceptionOutput
 
-MOVE_THRESHOLD_PIXELS = 10.0
+MOVE_DEADBAND_NORM1000 = 20
 NEAREST_MATCH_PIXELS = 45.0
 RECENT_EVENT_LIMIT = 96
 
@@ -28,6 +27,35 @@ def _distance(left: list[int], right: list[int]) -> float:
     return math.hypot(ly - ry, lx - rx)
 
 
+def _bbox_moved(previous: list[int], current: list[int]) -> bool:
+    return any(
+        abs(previous_value - current_value) >= MOVE_DEADBAND_NORM1000
+        for previous_value, current_value in zip(previous, current, strict=True)
+    )
+
+
+def _center_is_inside(inner: list[int], outer: list[int]) -> bool:
+    center_y, center_x = _center(inner)
+    y1, x1, y2, x2 = outer
+    return y1 <= center_y <= y2 and x1 <= center_x <= x2
+
+
+def _to_image_bbox(normalized_xyxy: list[int]) -> list[int]:
+    x1, y1, x2, y2 = normalized_xyxy
+    return [
+        min(256, max(0, round(value * 256 / 1000)))
+        for value in (y1, x1, y2, x2)
+    ]
+
+
+def _to_normalized_bbox(image_yxyx: list[int]) -> list[int]:
+    y1, x1, y2, x2 = image_yxyx
+    return [
+        round(value * 1000 / 256)
+        for value in (x1, y1, x2, y2)
+    ]
+
+
 def _suffix(index: int) -> str:
     if index < len(string.ascii_lowercase):
         return string.ascii_lowercase[index]
@@ -36,7 +64,7 @@ def _suffix(index: int) -> str:
 
 
 class MemoryReducer:
-    """Own the complete belief state; the VLM supplies only current observations."""
+    """Own deterministic identity, relations, events, and persistent state."""
 
     def __init__(self) -> None:
         self.state = MemoryState()
@@ -53,16 +81,18 @@ class MemoryReducer:
     @staticmethod
     def _best_automatic_match(
         observation: ObjectObservation,
-        entities: dict[str, EntityState],
+        entities: dict[str, MemoryEntity],
+        states: dict[str, EntityState],
         claimed: set[str],
     ) -> str | None:
         candidates: list[tuple[float, str]] = []
         for entity_id, entity in entities.items():
             if entity_id in claimed or entity.type != observation.type:
                 continue
-            if observation.color and entity.color and observation.color != entity.color:
-                continue
-            distance = _distance(observation.bbox_yxyx, entity.bbox_yxyx)
+            distance = _distance(
+                _to_image_bbox(observation.bbox_xyxy_norm1000),
+                states[entity_id].bbox_yxyx,
+            )
             if distance <= NEAREST_MATCH_PIXELS:
                 candidates.append((distance, entity_id))
         return min(candidates)[1] if candidates else None
@@ -70,37 +100,47 @@ class MemoryReducer:
     def _resolve_observations(
         self,
         observations: list[ObjectObservation],
-        entities: dict[str, EntityState],
-    ) -> tuple[list[tuple[ObjectObservation, str]], dict[str, str]]:
+        entities: dict[str, MemoryEntity],
+        states: dict[str, EntityState],
+    ) -> list[tuple[ObjectObservation, str]]:
         claimed: set[str] = set()
-        ref_map: dict[str, str] = {}
         resolved: list[tuple[ObjectObservation, str]] = []
         pending: list[ObjectObservation] = []
 
         for observation in observations:
             requested = observation.entity_id
-            if requested in entities and entities[requested].type == observation.type and requested not in claimed:
+            if (
+                requested in entities
+                and entities[requested].type == observation.type
+                and requested not in claimed
+            ):
                 entity_id = requested
             else:
-                entity_id = self._best_automatic_match(observation, entities, claimed)
+                entity_id = self._best_automatic_match(
+                    observation,
+                    entities,
+                    states,
+                    claimed,
+                )
             if entity_id is None:
                 pending.append(observation)
                 continue
             claimed.add(entity_id)
-            ref_map[observation.observation_id] = entity_id
-            ref_map[entity_id] = entity_id
             resolved.append((observation, entity_id))
 
         reserved = set(entities) | claimed
-        pending.sort(key=lambda item: (item.type, _center(item.bbox_yxyx)[1]))
+        pending.sort(
+            key=lambda item: (
+                item.type,
+                _center(_to_image_bbox(item.bbox_xyxy_norm1000))[1],
+            )
+        )
         for observation in pending:
             entity_id = self._next_id(observation.type, reserved)
             reserved.add(entity_id)
             claimed.add(entity_id)
-            ref_map[observation.observation_id] = entity_id
-            ref_map[entity_id] = entity_id
             resolved.append((observation, entity_id))
-        return resolved, ref_map
+        return resolved
 
     @staticmethod
     def _event_key(event: MemoryEvent) -> tuple[int, str, str, str | None]:
@@ -110,75 +150,197 @@ class MemoryReducer:
         if self._event_key(event) not in {self._event_key(item) for item in events}:
             events.append(event)
 
-    def _apply_vlm_event(
+    def _remove_cover_and_record_uncovered(
         self,
-        event: EventObservation,
-        ref_map: dict[str, str],
-        entities: dict[str, EntityState],
-        events: list[MemoryEvent],
+        *,
+        cube_id: str,
+        evidence_frame: int,
         relations: dict[tuple[str, str, str], MemoryRelation],
+        events: list[MemoryEvent],
+        uncertainties: list[str],
     ) -> None:
-        subject_id = ref_map.get(event.subject_ref, event.subject_ref)
-        object_id = ref_map.get(event.object_ref, event.object_ref) if event.object_ref else None
-        if subject_id not in entities or (object_id is not None and object_id not in entities):
-            return
-        self._append_event(
-            events,
-            MemoryEvent(
-                frame=event.evidence_frame,
-                type=event.type,
-                subject_id=subject_id,
-                object_id=object_id,
-                confidence=event.confidence,
-                source="vlm",
-                detail=event.detail,
-            ),
-        )
-        if event.type == "covered" and object_id is not None:
-            key = (subject_id, "covers", object_id)
-            relations[key] = MemoryRelation(
-                subject_id=subject_id,
-                relation="covers",
-                object_id=object_id,
-                last_evidence_frame=event.evidence_frame,
-                confidence=event.confidence,
+        covering_keys = [
+            key
+            for key, relation in relations.items()
+            if relation.relation == "covers" and relation.object_id == cube_id
+        ]
+        for key in covering_keys:
+            relations.pop(key)
+        if len(covering_keys) == 1:
+            container_id = covering_keys[0][0]
+            self._append_event(
+                events,
+                MemoryEvent(
+                    frame=evidence_frame,
+                    type="uncovered",
+                    subject_id=cube_id,
+                    object_id=container_id,
+                    source="reducer",
+                    detail="The previously occluded cube became directly visible.",
+                ),
             )
-        elif event.type == "uncovered" and object_id is not None:
-            relations.pop((subject_id, "covers", object_id), None)
-        elif event.type == "picked":
-            entities[subject_id].held = True
-        elif event.type == "placed":
-            entities[subject_id].held = False
-        elif event.type == "pressed":
-            entities[subject_id].pressed = True
+        elif len(covering_keys) > 1:
+            uncertainties.append(
+                f"{cube_id} became visible but had multiple covering relations; "
+                "all were removed without selecting one uncovered container."
+            )
+
+    def _apply_strict_occlusions(
+        self,
+        *,
+        perception: PerceptionOutput,
+        observed_entity_ids: set[str],
+        container_observations: dict[str, tuple[list[int], int]],
+        entities: dict[str, MemoryEntity],
+        states: dict[str, EntityState],
+        relations: dict[tuple[str, str, str], MemoryRelation],
+        events: list[MemoryEvent],
+        uncertainties: list[str],
+    ) -> None:
+        candidate_map: dict[str, list[str]] = {}
+        evidence_frames: dict[str, int] = {}
+
+        for change in perception.observed_visibility_changes:
+            entity_id = change.entity_id
+            evidence_frames[entity_id] = change.evidence_frame
+            if entity_id not in entities:
+                uncertainties.append(
+                    f"Ignored visibility change for unknown entity {entity_id}."
+                )
+                continue
+            if entity_id in observed_entity_ids:
+                uncertainties.append(
+                    f"Ignored contradictory visible and occluded reports for {entity_id}."
+                )
+                continue
+            state = states[entity_id]
+            if state.visibility != "visible":
+                uncertainties.append(
+                    f"Ignored repeated occlusion for {entity_id}; "
+                    f"previous visibility was {state.visibility}."
+                )
+                continue
+            if entities[entity_id].type != "cube":
+                state.visibility = "occluded"
+                state.motion = "unknown"
+                continue
+
+            candidates = [
+                container_id
+                for container_id, (container_bbox, _) in container_observations.items()
+                if not states[container_id].held
+                and _center_is_inside(state.bbox_yxyx, container_bbox)
+                and not any(
+                    relation.subject_id == container_id
+                    and relation.relation == "covers"
+                    and relation.object_id != entity_id
+                    for relation in relations.values()
+                )
+            ]
+            candidate_map[entity_id] = candidates
+
+        reverse_candidates: dict[str, list[str]] = {}
+        for cube_id, container_ids in candidate_map.items():
+            for container_id in container_ids:
+                reverse_candidates.setdefault(container_id, []).append(cube_id)
+
+        for cube_id, candidates in candidate_map.items():
+            state = states[cube_id]
+            unambiguous = (
+                len(candidates) == 1
+                and len(reverse_candidates[candidates[0]]) == 1
+            )
+            if not unambiguous:
+                state.visibility = "unobserved"
+                state.motion = "unknown"
+                uncertainties.append(
+                    f"Could not validate a unique covering container for {cube_id}; "
+                    f"candidates={candidates}."
+                )
+                continue
+
+            container_id = candidates[0]
+            evidence_frame = max(
+                evidence_frames[cube_id],
+                container_observations[container_id][1],
+            )
+            relation_key = (container_id, "covers", cube_id)
+            relations[relation_key] = MemoryRelation(
+                subject_id=container_id,
+                relation="covers",
+                object_id=cube_id,
+                last_evidence_frame=evidence_frame,
+            )
+            state.visibility = "occluded"
+            state.motion = "unknown"
+            self._append_event(
+                events,
+                MemoryEvent(
+                    frame=evidence_frame,
+                    type="covered",
+                    subject_id=cube_id,
+                    object_id=container_id,
+                    source="reducer",
+                    detail=(
+                        "The cube became occluded and its previous bbox center "
+                        "is inside one uniquely matched container bbox."
+                    ),
+                ),
+            )
 
     def apply(self, perception: PerceptionOutput, current_frame: int) -> MemoryState:
-        entities = {item.id: item.model_copy(deep=True) for item in self.state.entities}
+        observation_ids = [
+            observation.observation_id
+            for observation in perception.observed_objects
+        ]
+        if len(observation_ids) != len(set(observation_ids)):
+            raise ValueError("observation_id must be unique within one response")
+
+        entities = {
+            item.id: item.model_copy(deep=True)
+            for item in self.state.entities
+        }
+        states = {
+            item.id: item.model_copy(deep=True)
+            for item in self.state.states
+        }
         relations = {
             (item.subject_id, item.relation, item.object_id): item.model_copy(deep=True)
             for item in self.state.relations
         }
         events = [item.model_copy(deep=True) for item in self.state.events]
+        uncertainties = list(perception.uncertainties)
 
-        for entity in entities.values():
-            entity.visibility = "unobserved"
-            entity.held = False
+        for state in states.values():
+            state.motion = "stationary" if state.visibility == "visible" else "unknown"
 
-        resolved, ref_map = self._resolve_observations(perception.observed_objects, entities)
+        resolved = self._resolve_observations(
+            perception.observed_objects,
+            entities,
+            states,
+        )
+        observed_entity_ids = {entity_id for _, entity_id in resolved}
+        container_observations: dict[str, tuple[list[int], int]] = {}
+
         for observation, entity_id in resolved:
-            previous = entities.get(entity_id)
+            image_bbox = _to_image_bbox(observation.bbox_xyxy_norm1000)
+            previous = states.get(entity_id)
             if previous is None:
-                entities[entity_id] = EntityState(
+                entities[entity_id] = MemoryEntity(
                     id=entity_id,
                     type=observation.type,
-                    bbox_yxyx=copy.deepcopy(observation.bbox_yxyx),
-                    color=observation.color,
+                )
+                states[entity_id] = EntityState(
+                    id=entity_id,
+                    bbox_yxyx=image_bbox,
+                    present=True,
                     visibility="visible",
+                    motion="stationary",
+                    held=observation.held is True,
                     pressed=observation.pressed,
-                    held=observation.held,
-                    first_seen_frame=observation.evidence_frame,
+                    highlighted=observation.highlighted,
+                    color=observation.color,
                     last_seen_frame=observation.evidence_frame,
-                    confidence=observation.confidence,
                 )
                 self._append_event(
                     events,
@@ -187,58 +349,126 @@ class MemoryReducer:
                         type="appeared",
                         subject_id=entity_id,
                         object_id=None,
-                        confidence=observation.confidence,
                         source="reducer",
                         detail="First direct observation.",
                     ),
                 )
-                continue
+            else:
+                previous_visibility = previous.visibility
+                previous_pressed = previous.pressed
+                previous_held = previous.held
+                previous_normalized_bbox = _to_normalized_bbox(previous.bbox_yxyx)
+                if _bbox_moved(
+                    previous_normalized_bbox,
+                    observation.bbox_xyxy_norm1000,
+                ):
+                    previous.motion = "moving"
+                    previous.bbox_yxyx = image_bbox
+                    self._append_event(
+                        events,
+                        MemoryEvent(
+                            frame=observation.evidence_frame,
+                            type="moved",
+                            subject_id=entity_id,
+                            object_id=None,
+                            source="reducer",
+                            detail=(
+                                "At least one normalized xyxy coordinate changed "
+                                "by 20 units or more."
+                            ),
+                        ),
+                    )
+                else:
+                    previous.motion = "stationary"
 
-            if _distance(previous.bbox_yxyx, observation.bbox_yxyx) >= MOVE_THRESHOLD_PIXELS:
-                self._append_event(
-                    events,
-                    MemoryEvent(
-                        frame=observation.evidence_frame,
-                        type="moved",
-                        subject_id=entity_id,
-                        object_id=None,
-                        confidence=observation.confidence,
-                        source="reducer",
-                        detail="Bounding-box center changed by at least 10 pixels.",
-                    ),
+                previous.color = observation.color or previous.color
+                previous.present = True
+                previous.visibility = "visible"
+                if observation.pressed is not None:
+                    previous.pressed = observation.pressed
+                if observation.held is not None:
+                    previous.held = observation.held
+                if observation.highlighted is not None:
+                    previous.highlighted = observation.highlighted
+                previous.last_seen_frame = observation.evidence_frame
+
+                if (
+                    observation.type == "button"
+                    and observation.pressed is True
+                    and previous_pressed is not True
+                ):
+                    self._append_event(
+                        events,
+                        MemoryEvent(
+                            frame=observation.evidence_frame,
+                            type="pressed",
+                            subject_id=entity_id,
+                            object_id=None,
+                            source="reducer",
+                            detail="The observed button state changed to pressed.",
+                        ),
+                    )
+                if observation.held is True and not previous_held:
+                    self._append_event(
+                        events,
+                        MemoryEvent(
+                            frame=observation.evidence_frame,
+                            type="picked",
+                            subject_id=entity_id,
+                            object_id=None,
+                            source="reducer",
+                            detail="The observed held state changed to true.",
+                        ),
+                    )
+                elif observation.held is False and previous_held:
+                    self._append_event(
+                        events,
+                        MemoryEvent(
+                            frame=observation.evidence_frame,
+                            type="placed",
+                            subject_id=entity_id,
+                            object_id=None,
+                            source="reducer",
+                            detail="The observed held state changed to false.",
+                        ),
+                    )
+                if observation.type == "cube" and previous_visibility == "occluded":
+                    self._remove_cover_and_record_uncovered(
+                        cube_id=entity_id,
+                        evidence_frame=observation.evidence_frame,
+                        relations=relations,
+                        events=events,
+                        uncertainties=uncertainties,
+                    )
+
+            if observation.type == "container":
+                container_observations[entity_id] = (
+                    image_bbox,
+                    observation.evidence_frame,
                 )
-            previous.bbox_yxyx = copy.deepcopy(observation.bbox_yxyx)
-            previous.color = observation.color or previous.color
-            previous.visibility = "visible"
-            previous.pressed = observation.pressed if observation.pressed is not None else previous.pressed
-            previous.held = observation.held
-            previous.last_seen_frame = observation.evidence_frame
-            previous.confidence = observation.confidence
 
-        for relation in perception.observed_relations:
-            subject_id = ref_map.get(relation.subject_ref, relation.subject_ref)
-            object_id = ref_map.get(relation.object_ref, relation.object_ref)
-            if subject_id not in entities or object_id not in entities:
-                continue
-            key = (subject_id, relation.relation, object_id)
-            relations[key] = MemoryRelation(
-                subject_id=subject_id,
-                relation=relation.relation,
-                object_id=object_id,
-                last_evidence_frame=relation.evidence_frame,
-                confidence=relation.confidence,
-            )
+        self._apply_strict_occlusions(
+            perception=perception,
+            observed_entity_ids=observed_entity_ids,
+            container_observations=container_observations,
+            entities=entities,
+            states=states,
+            relations=relations,
+            events=events,
+            uncertainties=uncertainties,
+        )
 
-        for event in perception.observed_events:
-            self._apply_vlm_event(event, ref_map, entities, events, relations)
-
-        holding = next((item.id for item in entities.values() if item.held), None)
+        holding = next((item.id for item in states.values() if item.held), None)
         self.state = MemoryState(
             current_frame=current_frame,
             entities=sorted(entities.values(), key=lambda item: item.id),
-            relations=sorted(relations.values(), key=lambda item: (item.subject_id, item.object_id)),
+            states=sorted(states.values(), key=lambda item: item.id),
+            relations=sorted(
+                relations.values(),
+                key=lambda item: (item.subject_id, item.object_id),
+            ),
             events=events[-RECENT_EVENT_LIMIT:],
             robot={"holding": holding},
-            uncertainties=perception.uncertainties,
+            uncertainties=uncertainties,
         )
         return self.state.model_copy(deep=True)

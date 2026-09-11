@@ -8,10 +8,11 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .oracle_video import target_colors
 from .reducer import MemoryReducer
+from .reducer import _to_normalized_bbox
 from .schemas import DecisionOutput
 from .schemas import GroundedSubgoal
+from .schemas import InitialPerceptionOutput
 from .schemas import MemoryEvent
 from .schemas import MemoryState
 from .schemas import PerceptionOutput
@@ -33,7 +34,12 @@ class SplitObjectMemoryPlanner:
         self.backend = backend
         root = package_root or Path(__file__).resolve().parent
         shared = (root / "planner_rules.txt").read_text(encoding="utf-8")
-        self.perception_prompt = shared + "\n\n" + (root / "perception_rules.txt").read_text(encoding="utf-8")
+        self.initial_perception_prompt = (
+            root / "perception_rules_initial.txt"
+        ).read_text(encoding="utf-8")
+        self.delta_perception_prompt = (
+            root / "perception_rules_delta.txt"
+        ).read_text(encoding="utf-8")
         self.decision_prompt = shared + "\n\n" + (root / "decision_rules.txt").read_text(encoding="utf-8")
         self.reducer = MemoryReducer()
         self.active_subgoal: SubgoalDecision | None = None
@@ -62,14 +68,33 @@ class SplitObjectMemoryPlanner:
         return value
 
     @staticmethod
+    def _track_table(memory: MemoryState) -> list[dict[str, Any]]:
+        states = {item.id: item for item in memory.states}
+        return [
+            {
+                "id": item.id,
+                "type": item.type,
+                "color": states[item.id].color,
+                "visibility": states[item.id].visibility,
+                "pressed": states[item.id].pressed,
+                "held": states[item.id].held,
+                "highlighted": states[item.id].highlighted,
+                "last_bbox_xyxy_norm1000": _to_normalized_bbox(
+                    states[item.id].bbox_yxyx
+                ),
+                "last_seen_frame": states[item.id].last_seen_frame,
+            }
+            for item in memory.entities
+        ]
+
+    @staticmethod
     def _normalize_evidence_frames(perception: PerceptionOutput, frame_indices: list[int]) -> list[str]:
         corrections: list[str] = []
         allowed = set(frame_indices)
         current = frame_indices[-1]
         for item in [
             *perception.observed_objects,
-            *perception.observed_relations,
-            *perception.observed_events,
+            *perception.observed_visibility_changes,
         ]:
             if item.evidence_frame not in allowed:
                 corrections.append(f"{type(item).__name__}:{item.evidence_frame}->{current}")
@@ -78,33 +103,25 @@ class SplitObjectMemoryPlanner:
 
     @staticmethod
     def _ground(memory: MemoryState, subgoal: SubgoalDecision) -> GroundedSubgoal:
+        stage_text = subgoal.stage.strip().replace("_", " ")
         if subgoal.target_entity_id is None:
-            text = "Put down the container." if subgoal.stage == "put_down_container" else "Remain static."
             return GroundedSubgoal(
                 stage=subgoal.stage,
-                text=text,
+                text=stage_text.rstrip(".").capitalize() + ".",
                 target_entity_id=None,
                 point_yx=None,
             )
-        entity = next((item for item in memory.entities if item.id == subgoal.target_entity_id), None)
-        if entity is None:
+        state = next((item for item in memory.states if item.id == subgoal.target_entity_id), None)
+        if state is None:
             return GroundedSubgoal(
                 stage=subgoal.stage,
                 text=f"{subgoal.stage} targeting unresolved {subgoal.target_entity_id}.",
                 target_entity_id=subgoal.target_entity_id,
                 point_yx=None,
             )
-        y1, x1, y2, x2 = entity.bbox_yxyx
+        y1, x1, y2, x2 = state.bbox_yxyx
         point = [(y1 + y2) // 2, (x1 + x2) // 2]
-        if subgoal.stage == "press_first_button":
-            text = f"Press the first button at <{point[0]} {point[1]}>."
-        elif subgoal.stage == "press_second_button":
-            text = f"Press the second button at <{point[0]} {point[1]}>."
-        else:
-            text = (
-                f"Pick up the container at <{point[0]} {point[1]}> "
-                f"that hides the {subgoal.target_color} cube."
-            )
+        text = f"{stage_text.rstrip('.').capitalize()} at <{point[0]} {point[1]}>."
         return GroundedSubgoal(
             stage=subgoal.stage,
             text=text,
@@ -124,13 +141,19 @@ class SplitObjectMemoryPlanner:
         call_dir.mkdir(parents=True, exist_ok=True)
         image_paths = self._save_images(call_dir, frame_indices, frames)
         before_memory = self.reducer.state.model_copy(deep=True)
+        is_initial = call_frame == 0
         existing_event_keys = {_event_key(item) for item in before_memory.events}
         perception_payload = {
-            "task": "ButtonUnmaskSwap",
-            "task_goal": task_goal,
             "absolute_frame_numbers": frame_indices,
-            "existing_object_memory": self._compact_memory(before_memory),
-            "instructions": "The <image> items below are chronological front-camera frames only.",
+            "object_type_constraint": (
+                "There are no objects other than these: ['cube', 'button', 'container']"
+            ),
+            "existing_tracks_for_identity_matching": self._track_table(before_memory),
+            "perception_mode": (
+                "initial_visible_object_inventory"
+                if is_initial
+                else "delta_only_changes_not_inventory"
+            ),
         }
         perception_user = (
             "\n".join(
@@ -140,29 +163,42 @@ class SplitObjectMemoryPlanner:
             + "\n\nINPUT\n"
             + json.dumps(perception_payload, indent=2, ensure_ascii=False)
         )
+        perception_schema = InitialPerceptionOutput if is_initial else PerceptionOutput
+        perception_prompt = (
+            self.initial_perception_prompt
+            if is_initial
+            else self.delta_perception_prompt
+        )
         perception_result = self.backend.infer(
-            system_prompt=self.perception_prompt,
+            system_prompt=perception_prompt,
             user_prompt=perception_user,
             image_paths=image_paths,
-            schema=PerceptionOutput,
-            max_tokens=2300,
+            schema=perception_schema,
+            max_tokens=1600,
         )
         perception = perception_result.parsed
         assert isinstance(perception, PerceptionOutput)
+        _write_json(call_dir / "perception_output.json", perception.model_dump(mode="json"))
+        _write_json(
+            call_dir / "perception_attempts.json",
+            {"attempts": perception_result.attempts},
+        )
         evidence_corrections = self._normalize_evidence_frames(perception, frame_indices)
         memory = self.reducer.apply(perception, call_frame)
+        _write_json(call_dir / "reducer_output.json", memory.model_dump(mode="json"))
         current_events = [
             event.model_dump(mode="json")
             for event in memory.events
             if _event_key(event) not in existing_event_keys
         ]
 
-        colors = target_colors(task_goal)
         decision_payload = {
-            "task": "ButtonUnmaskSwap",
             "task_goal": task_goal,
-            "target_colors_in_order": colors,
             "current_frame": call_frame,
+            "button_selection_rule": (
+                "If there are two or more buttons left to press, press the one "
+                "with the biggest x-coordinate first."
+            ),
             "active_subgoal": (
                 self.active_subgoal.model_dump(mode="json") if self.active_subgoal is not None else None
             ),
@@ -177,10 +213,15 @@ class SplitObjectMemoryPlanner:
             user_prompt="INPUT\n" + json.dumps(decision_payload, indent=2, ensure_ascii=False),
             image_paths=[],
             schema=DecisionOutput,
-            max_tokens=700,
+            max_tokens=400,
         )
         decision = decision_result.parsed
         assert isinstance(decision, DecisionOutput)
+        _write_json(call_dir / "decision_output.json", decision.model_dump(mode="json"))
+        _write_json(
+            call_dir / "decision_attempts.json",
+            {"attempts": decision_result.attempts},
+        )
 
         structural_warning = None
         previous_active = self.active_subgoal.model_copy(deep=True) if self.active_subgoal else None
@@ -196,6 +237,10 @@ class SplitObjectMemoryPlanner:
             self.completed_subgoals.append(previous_active)
         self.active_subgoal = decision.next_subgoal.model_copy(deep=True)
         grounded = self._ground(memory, self.active_subgoal)
+        _write_json(
+            call_dir / "grounded_subgoal_output.json",
+            grounded.model_dump(mode="json"),
+        )
 
         record = {
             "call_frame": call_frame,
@@ -215,13 +260,5 @@ class SplitObjectMemoryPlanner:
             ],
             "structural_warning": structural_warning,
         }
-        _write_json(
-            call_dir / "perception_attempts.json",
-            {"attempts": perception_result.attempts},
-        )
-        _write_json(
-            call_dir / "decision_attempts.json",
-            {"attempts": decision_result.attempts},
-        )
         _write_json(call_dir / "call.json", record)
         return copy.deepcopy(record)

@@ -33,7 +33,8 @@ class LoadedEpisode:
     spec: EpisodeSpec
     frame_count: int
     fps: float
-    oracle_transition_frames: list[int]
+    oracle_text_transition_frames: list[int]
+    oracle_completion_frames: list[int]
     oracle_stages: list[Stage]
     boundaries: list[OracleBoundary]
     front_frames: dict[int, np.ndarray]
@@ -102,20 +103,22 @@ def _front_view(frame: np.ndarray) -> np.ndarray:
 
 def _oracle_boundaries(
     frame_count: int,
-    transition_frames: list[int],
+    completion_frames: list[int],
     stages: list[Stage],
 ) -> list[OracleBoundary]:
     boundaries: list[OracleBoundary] = []
     for call_frame in range(0, frame_count, CALL_INTERVAL):
-        effective_frame = max(call_frame, transition_frames[0])
+        effective_frame = max(call_frame, completion_frames[0])
         stage_index = max(
-            index for index, transition in enumerate(transition_frames) if transition <= effective_frame
+            index
+            for index, completion in enumerate(completion_frames)
+            if completion <= effective_frame
         )
         previous_call = call_frame - CALL_INTERVAL
         changes = [
-            transition
-            for transition in transition_frames[1:]
-            if previous_call < transition <= call_frame
+            completion
+            for completion in completion_frames[1:]
+            if previous_call < completion <= call_frame
         ]
         boundaries.append(
             OracleBoundary(
@@ -142,7 +145,7 @@ def load_episode(spec: EpisodeSpec) -> LoadedEpisode:
     }
 
     front_frames: dict[int, np.ndarray] = {}
-    transition_frames: list[int] = []
+    text_transition_frames: list[int] = []
     previous_band: np.ndarray | None = None
     frame_index = 0
     while True:
@@ -153,7 +156,7 @@ def load_episode(spec: EpisodeSpec) -> LoadedEpisode:
         if previous_band is not None:
             difference = float(np.mean(cv2.absdiff(band, previous_band)))
             if difference >= SUBGOAL_CHANGE_THRESHOLD:
-                transition_frames.append(frame_index)
+                text_transition_frames.append(frame_index)
         previous_band = band
         if frame_index in needed:
             front_frames[frame_index] = _front_view(frame)
@@ -163,11 +166,12 @@ def load_episode(spec: EpisodeSpec) -> LoadedEpisode:
     if frame_index != frame_count:
         frame_count = frame_index
     stages = stages_from_goal(spec.task_goal)
-    if len(transition_frames) != len(stages):
+    if len(text_transition_frames) != len(stages):
         raise RuntimeError(
-            f"Detected {len(transition_frames)} oracle subgoal segments but expected "
-            f"{len(stages)} for episode {spec.episode_id}: {transition_frames}"
+            f"Detected {len(text_transition_frames)} oracle subgoal segments but expected "
+            f"{len(stages)} for episode {spec.episode_id}: {text_transition_frames}"
         )
+    completion_frames = [max(0, frame - 1) for frame in text_transition_frames]
     missing = sorted(needed - set(front_frames))
     if missing:
         raise RuntimeError(f"Video extraction missed frame indices: {missing}")
@@ -175,8 +179,9 @@ def load_episode(spec: EpisodeSpec) -> LoadedEpisode:
         spec=spec,
         frame_count=frame_count,
         fps=fps,
-        oracle_transition_frames=transition_frames,
+        oracle_text_transition_frames=text_transition_frames,
+        oracle_completion_frames=completion_frames,
         oracle_stages=stages,
-        boundaries=_oracle_boundaries(frame_count, transition_frames, stages),
+        boundaries=_oracle_boundaries(frame_count, completion_frames, stages),
         front_frames=front_frames,
     )

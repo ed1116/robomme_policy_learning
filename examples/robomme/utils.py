@@ -84,12 +84,19 @@ class EpisodeState:
 
 
 class RolloutRecorder:
-    def __init__(self, save_dir: str, task_goal: str, fps: int = 30):
+    def __init__(
+        self,
+        save_dir: str,
+        task_goal: str,
+        fps: int = 30,
+        draw_grounding_points: bool = True,
+    ):
         self.save_dir = save_dir
         save_dir.mkdir(parents=True, exist_ok=True)
         self.total_images = []
         self.fps = fps
         self.task_goal = task_goal
+        self.draw_grounding_points = draw_grounding_points
         
     def _extract_points(self, subgoal: str):
         match = re.findall(r'<(\d+), (\d+)>', subgoal)
@@ -114,7 +121,7 @@ class RolloutRecorder:
             subgoal_text = "Subgoal: " + subgoal
             subgoal_text_area = self.add_text_area(subgoal_text, concat_image.shape)
             
-            if self._extract_points(subgoal) is not None:
+            if self.draw_grounding_points:
                 for point in self._extract_points(subgoal):
                     concat_image = cv2.circle(concat_image, point[::-1], 5, (255, 255, 0), -1)
                     

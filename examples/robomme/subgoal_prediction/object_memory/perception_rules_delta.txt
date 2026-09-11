@@ -1,0 +1,135 @@
+PERCEPTION DELTA CALL — OBSERVATIONS ONLY
+
+The deterministic memory already contains the persistent object inventory.
+Return only directly observed state changes from the four chronological
+front-camera images. This is not a scene inventory.
+
+There are no objects other than these: ['cube', 'button', 'container']
+
+Do not infer or output relations or events. In particular, do not output
+covers, covered, uncovered, moved, pressed, picked, placed, task completion, or
+subgoals. The deterministic reducer derives those from your object and
+visibility observations.
+
+Return one JSON object with no prose or code fence. The object must contain
+exactly these top-level keys: observed_objects,
+observed_visibility_changes, and uncertainties. Populate each array from the
+actual visual evidence. Empty arrays are correct only when the corresponding
+kind of change or uncertainty is absent.
+
+NO-CHANGE OUTPUT
+
+If there is no object-state change, no visibility change, and no genuine
+uncertainty in the supplied images, return exactly this empty delta:
+
+{
+  "observed_objects": [],
+  "observed_visibility_changes": [],
+  "uncertainties": []
+}
+
+Do not return literal null. The empty JSON object above is the schema-valid
+no-change result.
+
+NON-EMPTY FORMAT EXAMPLE
+
+The values below are synthetic and demonstrate format only. Do not copy the
+object count, identity, coordinates, attributes, or frame number.
+
+{
+  "observed_objects": [
+    {
+      "observation_id": "observation_1",
+      "entity_id": null,
+      "type": "container",
+      "bbox_xyxy_norm1000": [300, 400, 420, 540],
+      "color": "white",
+      "pressed": null,
+      "highlighted": false,
+      "held": false,
+      "evidence_frame": 40
+    }
+  ],
+  "observed_visibility_changes": [
+    {
+      "entity_id": "cube_existing",
+      "visibility": "occluded",
+      "evidence_frame": 40
+    }
+  ],
+  "uncertainties": []
+}
+
+OBSERVED OBJECTS
+
+Include an object in observed_objects only when:
+
+1. It is newly visible and has no existing track.
+2. Its current bbox changed beyond the deadband below.
+3. Its pressed, highlighted, held, color, or other visible state changed.
+4. It was previously occluded or unobserved and is directly visible now.
+5. Its current bbox is needed as direct occluder evidence for a reported
+   visibility change, even when that bbox itself is unchanged.
+
+Do not repeat an unchanged visible object. Do not copy an object from an older
+frame when it is absent in the newest frame.
+
+Each included object requires:
+
+- observation_id: a unique sequential response-local ID.
+- entity_id: an existing persistent ID only when appearance and continuous
+  trajectory support the identity; otherwise null.
+- type: cube, button, or container.
+- bbox_xyxy_norm1000: a tight [x_min, y_min, x_max, y_max] box normalized to
+  0-1000.
+- color, pressed, highlighted, and held: current directly visible state.
+- evidence_frame: the newest frame supporting the state.
+
+Never reuse an observation_id within one response.
+
+BBOX DEADBAND
+
+All input and output bboxes use bbox_xyxy_norm1000. Existing tracks provide
+last_bbox_xyxy_norm1000 in the same ordering and scale.
+
+Five pixels in a 256x256 image are approximately 20 normalized units. If all
+four absolute xyxy coordinate differences are less than 20, position has not
+changed. Do not report the object for bbox jitter alone. A genuine non-position
+state change still must be reported.
+
+VISIBILITY CHANGES
+
+Use observed_visibility_changes only for an existing persistent entity that was
+visible and becomes directly occluded inside the supplied chronological
+window. Each entry has:
+
+{
+  "entity_id": "existing_entity_id",
+  "visibility": "occluded",
+  "evidence_frame": 40
+}
+
+For a cube, report occluded only when the images directly show that the cube is
+no longer visible in the newest frame and another visible object now occupies
+its previous image location. Do not repeat an occlusion already present in the
+existing track. Do not provide a bbox for an occluded object; its last visible
+bbox remains in deterministic memory.
+
+Absence alone is insufficient. If disappearance could be caused by the robot,
+camera boundary, poor visibility, or detector uncertainty, do not claim
+occluded. Put a short explanation in uncertainties instead.
+
+BUTTON AND HELD STATE
+
+Report pressed true only when the supplied images visibly show the button in a
+depressed state, not when the robot merely approaches or touches it. Report the
+state on the first frame that clearly supports it.
+
+Report held true only when the object is visibly secured by the gripper and
+moves with it. Report held false when a previously held object is visibly
+released. Do not infer held state from proximity alone.
+
+The newest image defines current state. Older images provide temporal evidence
+for a change. Use only generic visual evidence; do not assume an object count,
+task-specific arrangement, button effect, future motion, or hidden simulator
+state.

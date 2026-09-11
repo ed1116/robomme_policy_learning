@@ -5,18 +5,12 @@ from typing import Literal
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import field_validator
 from pydantic import model_validator
 
 EntityType = Literal["button", "container", "cube"]
 EventType = Literal["appeared", "moved", "covered", "uncovered", "pressed", "picked", "placed"]
-Stage = Literal[
-    "press_first_button",
-    "press_second_button",
-    "pick_first_target_container",
-    "put_down_container",
-    "pick_second_target_container",
-    "remain_static",
-]
+Stage = str
 
 
 class StrictModel(BaseModel):
@@ -27,42 +21,39 @@ class ObjectObservation(StrictModel):
     observation_id: str
     entity_id: str | None = None
     type: EntityType
-    bbox_yxyx: list[int] = Field(min_length=4, max_length=4)
+    bbox_xyxy_norm1000: list[int] = Field(min_length=4, max_length=4)
     color: str | None = None
     pressed: bool | None = None
-    held: bool = False
+    highlighted: bool | None = None
+    held: bool | None = None
     evidence_frame: int
-    confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("observation_id", mode="before")
+    @classmethod
+    def normalize_observation_id(cls, value: object) -> object:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return f"observation_{value}"
+        if isinstance(value, str) and value.isdigit():
+            return f"observation_{value}"
+        return value
 
     @model_validator(mode="after")
     def validate_bbox(self) -> ObjectObservation:
-        y1, x1, y2, x2 = self.bbox_yxyx
-        if not (0 <= y1 < y2 <= 256 and 0 <= x1 < x2 <= 256):
-            raise ValueError("bbox_yxyx must be ordered inside the 256x256 front view")
+        x1, y1, x2, y2 = self.bbox_xyxy_norm1000
+        if not (0 <= x1 < x2 <= 1000 and 0 <= y1 < y2 <= 1000):
+            raise ValueError("bbox_xyxy_norm1000 must be an ordered normalized box")
         return self
 
 
-class RelationObservation(StrictModel):
-    subject_ref: str
-    relation: Literal["covers"]
-    object_ref: str
+class VisibilityObservation(StrictModel):
+    entity_id: str
+    visibility: Literal["occluded"]
     evidence_frame: int
-    confidence: float = Field(ge=0.0, le=1.0)
-
-
-class EventObservation(StrictModel):
-    type: EventType
-    subject_ref: str
-    object_ref: str | None = None
-    evidence_frame: int
-    confidence: float = Field(ge=0.0, le=1.0)
-    detail: str
 
 
 class PerceptionOutput(StrictModel):
     observed_objects: list[ObjectObservation]
-    observed_relations: list[RelationObservation]
-    observed_events: list[EventObservation]
+    observed_visibility_changes: list[VisibilityObservation]
     uncertainties: list[str]
 
     @model_validator(mode="after")
@@ -70,20 +61,43 @@ class PerceptionOutput(StrictModel):
         identifiers = [item.observation_id for item in self.observed_objects]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("observation_id must be unique within one response")
+        visibility_ids = [
+            item.entity_id
+            for item in self.observed_visibility_changes
+        ]
+        if len(visibility_ids) != len(set(visibility_ids)):
+            raise ValueError(
+                "visibility entity_id must be unique within one response"
+            )
         return self
+
+
+class InitialPerceptionOutput(PerceptionOutput):
+    @model_validator(mode="after")
+    def validate_initial_inventory(self) -> InitialPerceptionOutput:
+        if not self.observed_objects:
+            raise ValueError("The initial call requires a non-empty visible-object inventory")
+        if self.observed_visibility_changes:
+            raise ValueError("The initial call cannot change visibility of unknown entities")
+        return self
+
+
+class MemoryEntity(StrictModel):
+    id: str
+    type: EntityType
 
 
 class EntityState(StrictModel):
     id: str
-    type: EntityType
     bbox_yxyx: list[int]
-    color: str | None
-    visibility: Literal["visible", "unobserved"]
-    pressed: bool | None
+    present: bool
+    visibility: Literal["visible", "occluded", "unobserved"]
+    motion: Literal["stationary", "moving", "unknown"]
     held: bool
-    first_seen_frame: int
+    pressed: bool | None
+    highlighted: bool | None
+    color: str | None
     last_seen_frame: int
-    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class MemoryRelation(StrictModel):
@@ -91,7 +105,6 @@ class MemoryRelation(StrictModel):
     relation: Literal["covers"]
     object_id: str
     last_evidence_frame: int
-    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class MemoryEvent(StrictModel):
@@ -99,7 +112,6 @@ class MemoryEvent(StrictModel):
     type: EventType
     subject_id: str
     object_id: str | None
-    confidence: float = Field(ge=0.0, le=1.0)
     source: Literal["vlm", "reducer"]
     detail: str
 
@@ -110,7 +122,8 @@ class RobotMemory(StrictModel):
 
 class MemoryState(StrictModel):
     current_frame: int = 0
-    entities: list[EntityState] = Field(default_factory=list)
+    entities: list[MemoryEntity] = Field(default_factory=list)
+    states: list[EntityState] = Field(default_factory=list)
     relations: list[MemoryRelation] = Field(default_factory=list)
     events: list[MemoryEvent] = Field(default_factory=list)
     robot: RobotMemory = Field(default_factory=RobotMemory)
@@ -122,24 +135,11 @@ class SubgoalDecision(StrictModel):
     target_entity_id: str | None
     target_color: str | None
 
-    @model_validator(mode="after")
-    def validate_target(self) -> SubgoalDecision:
-        needs_target = self.stage not in {"put_down_container", "remain_static"}
-        if needs_target and self.target_entity_id is None:
-            raise ValueError(f"{self.stage} requires target_entity_id")
-        if not needs_target and self.target_entity_id is not None:
-            raise ValueError(f"{self.stage} cannot have target_entity_id")
-        pick_stage = self.stage in {"pick_first_target_container", "pick_second_target_container"}
-        if not pick_stage and self.target_color is not None:
-            raise ValueError("target_color is only valid for a target-container pickup")
-        return self
-
 
 class DecisionOutput(StrictModel):
     subgoal_completed: bool
     completion_evidence: str
     next_subgoal: SubgoalDecision
-    confidence: float = Field(ge=0.0, le=1.0)
 
 
 class GroundedSubgoal(StrictModel):

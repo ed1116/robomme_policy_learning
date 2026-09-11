@@ -1,26 +1,51 @@
 DECISION CALL
 
 Read the task goal, deterministic memory, current-call events, completed subgoals,
-and active subgoal. Do not inspect images or rewrite memory.
+and active subgoal. Output only a completion judgment and one next subgoal; do
+not output or modify memory.
 
-- On the first call, subgoal_completed is false and next_subgoal is
-  press_first_button targeting the rightmost visible button.
+Possible subgoal forms for this task are:
+- press the first button
+- press the second button
+- pick up the container that hides the [red/blue/green] cube
+- put down the container
+
+These are language suggestions, not a schema-enforced closed vocabulary. Write
+one concise atomic subgoal in next_subgoal.stage.
+
+- On the first call, subgoal_completed is false.
 - Evaluate completion only for active_subgoal.
-- Set subgoal_completed=true only when a current-call event proves the active
-  primitive: pressed for a button, picked for a pickup, and placed for put-down.
+- Set subgoal_completed=true only when current evidence directly establishes the
+  outcome requested by active_subgoal. Approach, proximity, or an expected
+  consequence is not sufficient.
 - If incomplete, return active_subgoal unchanged.
-- If complete, advance exactly one stage:
-  press_first_button -> press_second_button -> pick_first_target_container.
-- After the first target pickup, advance to put_down_container when the task names
-  a second target color; otherwise advance to remain_static.
-- After put_down_container, advance to pick_second_target_container.
-- After the second target pickup, advance to remain_static.
-- For a pickup, choose the physical container historically associated by
-  covered/uncovered evidence with the requested cube color. Use its current ID,
-  not its old position.
+- If complete, choose one next atomic subgoal required by the task goal and not
+  already completed. Do not follow a fixed sequence that is absent from the task
+  goal.
+- If there are two or more buttons left to press, press the one with the biggest
+  x-coordinate first. Compare button centers using bbox_yxyx in `states`.
+- Select targets only from `entities`, their joined `states`, and relations
+  present in deterministic memory. Do not infer an object association that
+  memory does not contain.
 - target_color is the requested cube color for pickup stages and null otherwise.
-- put_down_container and remain_static have no target_entity_id.
+- target_entity_id must be an ID present in deterministic_object_memory. Use null
+  when memory has no valid target; never invent an ID.
+- A put-down subgoal has no target_entity_id.
 - completion_evidence must cite a current-call event or explain why evidence is
   insufficient.
 
-Output keys: subgoal_completed, completion_evidence, next_subgoal, confidence.
+Output keys: subgoal_completed, completion_evidence, and next_subgoal.
+
+EXAMPLE OUTPUT
+When the active subgoal is `press the second button` targeting `button_b` and the
+current evidence does not establish that press, a valid output is:
+
+{
+  "subgoal_completed": false,
+  "completion_evidence": "No current-call evidence directly establishes the active subgoal.",
+  "next_subgoal": {
+    "stage": "press the second button",
+    "target_entity_id": "button_b",
+    "target_color": null
+  }
+}

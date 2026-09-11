@@ -37,6 +37,7 @@ class Args:
     max_steps: int = 1300
     save_dir: str = "runs/evaluation"
     overwrite: bool = False
+    draw_grounding_points: bool = True
 
     use_history: bool = True
     policy_name: str = "dummy_test"
@@ -45,6 +46,7 @@ class Args:
 
     # task control
     num_episodes: int = 10
+    only_episode: Optional[int] = None
     re_eval_tasks: str = "" # tasks split by comma
     only_tasks: str = "" # tasks split by comma
     exclude_tasks: str = "" # tasks split by comma
@@ -54,8 +56,11 @@ class Args:
     use_qwenvl: bool = False
     use_memer: bool = False
     use_gemini: bool = False
+    use_gemma_groundsg: bool = False
     subgoal_type: Optional[str] = None  # [simple_subgoal, grounded_subgoal]
     gemini_model_name: str = "gemini-2.5-pro"
+    gemma_groundsg_model_id: str = "google/gemma-4-26B-A4B-it"
+    gemma_groundsg_max_new_tokens: int = 512
     qwenvl_simpleSG_adapter_path: str = "runs/ckpts/vlm_subgoal_predictor/qwenvl/simple_subgoal/checkpoint-1400"
     qwenvl_groundSG_adapter_path: str = "runs/ckpts/vlm_subgoal_predictor/qwenvl/grounded_subgoal/checkpoint-1200"
     memer_adapter_path: str = "runs/ckpts/vlm_subgoal_predictor/memer/grounded_subgoal/checkpoint-1300"
@@ -175,7 +180,12 @@ class EpisodeEvaluator:
         pre_traj = env_runner.get_init_obs()
         task_goal = pre_traj["task_goal"]
 
-        recorder = RolloutRecorder(video_save_dir, task_goal, fps=30)
+        recorder = RolloutRecorder(
+            video_save_dir,
+            task_goal,
+            fps=30,
+            draw_grounding_points=self.args.draw_grounding_points,
+        )
 
         print(f"task_goal: {task_goal}")
 
@@ -241,7 +251,9 @@ def setup_save_directory(args: Args) -> Path:
     )
 
     if args.subgoal_type in SUBGOAL_TYPES:
-        if args.use_gemini:
+        if args.use_gemma_groundsg:
+            save_dir = save_dir / "gemma-groundsg"
+        elif args.use_gemini:
             save_dir = save_dir / "gemini"
         elif args.use_qwenvl:
             save_dir = save_dir / "qwenvl"
@@ -346,11 +358,19 @@ def _evaluate_tasks(
                 log_dict[task_name] = {}
 
             env_runner = EnvRunner(task_name, video_save_dir, max_steps=args.max_steps)
-            num_episodes = min(args.num_episodes, env_runner.num_episodes)
+            if args.only_episode is None:
+                episode_ids = range(min(args.num_episodes, env_runner.num_episodes))
+            elif 0 <= args.only_episode < env_runner.num_episodes:
+                episode_ids = [args.only_episode]
+            else:
+                raise ValueError(
+                    f"Episode {args.only_episode} is outside the valid range "
+                    f"0-{env_runner.num_episodes - 1} for {task_name}"
+                )
 
             success_flag = "unknown"
 
-            for episode_id in range(num_episodes):
+            for episode_id in episode_ids:
                 if str(episode_id) in log_dict[task_name]:
                     print(f"[robomme] episode {episode_id} already evaluated, skipping...")
                     continue
